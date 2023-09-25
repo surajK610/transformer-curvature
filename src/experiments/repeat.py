@@ -15,7 +15,7 @@ import json
 import matplotlib.pyplot as plt
 #  sys.path.append('../src')
 from curvature_utils import compute_global_curvature, early_decode, logit_attribution
-from plotting_functions import plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions
+from plotting_functions import plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters
 import argparse
 import random
 import os
@@ -225,7 +225,7 @@ def clustering_analysis(num_samples, seq_len, seq_position, num_repeats, model, 
   cluster_groups = {}
   for i in range(num_clusters):
     cluster_groups[i] = sample_sequences[cluster_labels == i]
-  return cluster_groups
+  return cluster_groups, sample_sequences, cluster_labels
 
 
 def main(FLAGS):
@@ -259,17 +259,24 @@ def main(FLAGS):
       raise ValueError("Experiment not recognized")
     
     results = repeated_sequence_analysis(seq, FLAGS.num_repetitions, model)
+    os.makedirs(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}", exist_ok=True)
     
-    os.makedirs(f"outputs/repeat/seq_len={FLAGS.seq_length}-trial={i}", exist_ok=True)
+    with open(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/sequence.txt", 'w') as file:
+      file.write(seq)
     plot_rr_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, layer=8, show=False, save_fig=True, 
-                          save_path=f"outputs/repeat/seq_len={FLAGS.seq_length}-trial={i}/rr_vs_repetitions_trial.png") 
+                          save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/rr_vs_repetitions_trial.png") 
     plot_curvature_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
-                                  save_path=f"outputs/repeat/seq_len={FLAGS.seq_length}-trial={i}/curvature_vs_repetitions.png")
+                                  save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/curvature_vs_repetitions.png")
     plot_loss_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
-                            save_path=f"outputs/repeat/seq_len={FLAGS.seq_length}-trial={i}/loss_vs_repetitions.png")
+                            save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/loss_vs_repetitions.png")
   
   if FLAGS.experiment == "run_clustering_analysis":
-    pass 
+    cluster_groups, sample_sequences, cluster_labels = clustering_analysis(FLAGS.num_trials, FLAGS.seq_length, FLAGS.seq_length - 1, 
+                        FLAGS.num_repetitions, model, tokenizer, num_clusters=FLAGS.num_clusters)
+    os.makedirs(f"outputs/repeat/{FLAGS.name}/", exist_ok=True)
+    json.save(f"outputs/repeat/{FLAGS.name}/cluster_groups.json", cluster_groups)
+    plot_clusters(sample_sequences, cluster_labels, show=False, save_fig=True, 
+                  save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis.png")
        
        
 if __name__ == '__main__':
@@ -280,10 +287,10 @@ if __name__ == '__main__':
   parser.add_argument('--seq-length', default=5, type=int, help='number of tokens per in-context example')
   parser.add_argument('--num-trials', default=10, type=int, help='number of trials to run with this seq length')
   parser.add_argument('--num-repetitions', default=100, type=int, help='maximum number of repeated in context examples')
-  # parser.add_argument("--use-data-source", default=False, type=bool, 
-  #       help="whether to use a data source or generate random sequence")
-  # parser.add_argument("--data-path", default="datasets/repeat_sequence.txt", type=str, 
-  #       help="data path where sequence is located")
+  parser.add_argument('--name', default='repeat', type=str, help='name of experiment')
+  parser.add_argument('--experiment', default='run_randomized_repeat', type=str, 
+                      help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis)')
+  parser.add_argument('--num-clusters', default=4, type=int, help='number of clusters to use in clustering analysis')
   parser.add_argument("--device", default="cuda:0", type=str, help="device to run experiment on")
   
   FLAGS = parser.parse_args()

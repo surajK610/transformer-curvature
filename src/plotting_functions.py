@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
 def plot_curvature_vs_repetitions(results, sequence_position, offset=0, 
                                   show=True, save_fig=False, save_path=None):
@@ -143,6 +144,31 @@ def plot_global_curvature_dissected(dataset_curvatures, dataset_mlp_curvatures, 
   plt.ylabel("Global Curvature")
   plt.xlabel("Number of ICL Examples")
   plt.xticks([0, 1, 2, 3])
+  if save_fig and save_path:
+    plt.savefig(save_path)
+  if show:
+    plt.show()
+  plt.close()
+  
+def plot_clusters(dataset_curvatures, cluster_labels, show=True, save_fig=False, save_path=None):
+  pca = PCA(n_components=3)
+  pca_curvatures = pca.fit_transform(dataset_curvatures)  
+
+  fig = plt.figure()
+  ax = fig.add_subplot(111, projection='3d')
+
+  for cluster_label in set(cluster_labels):
+    cluster_indices = (cluster_labels == cluster_label)
+    ax.scatter(cluster_labels[cluster_indices, 0], 
+               pca_curvatures[cluster_indices, 1], 
+               pca_curvatures[cluster_indices, 2], 
+               label=f'Cluster {cluster_label}')
+    
+  ax.set_xlabel('PC1')
+  ax.set_ylabel('PC2')
+  ax.set_zlabel('PC3')
+  ax.set_title("Clustered Curvature Graph")
+  ax.legend()
   if save_fig and save_path:
     plt.savefig(save_path)
   if show:
