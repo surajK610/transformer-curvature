@@ -1,2 +1,6 @@
 *__pycache__*
 /venv
+src/outputs
+outputs/
+datasets/
+.ipynb_checkpoints/
