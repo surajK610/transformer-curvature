@@ -9,17 +9,22 @@ from transformer_lens.hook_points import (
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 from transformers import AutoTokenizer
 
-from sklearn.cluster import KMeans
+import numpy as np
 import torch
 import json
 import matplotlib.pyplot as plt
-#  sys.path.append('../src')
-from curvature_utils import compute_global_curvature, early_decode, logit_attribution
-from plotting_functions import plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters
+#sys.path.append('../src')
+from ..utils.curvature_utils import compute_global_curvature, early_decode, logit_attribution
+from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters
 import argparse
 import random
 import os
 import warnings
+from tqdm import tqdm
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
 
 # -----------------------------------------------------------DATA-----------------------------------------------------------#
 
@@ -115,13 +120,13 @@ def repeat_sequence_w_space(num_examples, string_sequence):
   Returns:
       repeated_sequence: repeated string sequence
   '''
-  s =" "
-  for j in range(max(1, num_examples)):
+  s =""
+  for _ in range(max(1, num_examples)):
       s+=string_sequence+' '
   return ' '+s.strip()
 
 # --------------------------------------------------------------ANALYSIS FUNCTIONS-----------------------------------------------------#
-def repeated_sequence_analysis(string_sequence, num_repeats, model):
+def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=False):
   '''Analyzes the curvature of a repeated sequence.
   Params:
       string_sequence: str, the string sequence to repeat
@@ -130,7 +135,11 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model):
   Returns:
       results: dict, dictionary of results
   '''
-  repeated_string_sequence = repeat_sequence(num_repeats, string_sequence)
+  if with_space:
+    repeated_string_sequence = repeat_sequence_w_space(num_repeats, string_sequence)
+  else:
+    repeated_string_sequence = repeat_sequence(num_repeats, string_sequence)
+  
   repeated_tokens = model.to_tokens(repeated_string_sequence)[0]
   seq_length = int(len(repeated_tokens[1:])/num_repeats) # ignores start token 
   
@@ -179,22 +188,32 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model):
 
   return results
 
-def bottom100_sequence_analysis():
-  pass
 
-def pattern_sequence_analysis():
-  pass
-
-def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer):
+def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='random'):
+  
   sample_vectors = []
   sample_sequences = []
   
-  for i in range(num_samples):
-    _, seq = generate_random_token_sequence(seq_len, tokenizer)
+  for i in tqdm(range(num_samples)):
+    if how == 'random':
+      _, seq = generate_random_token_sequence(seq_len, tokenizer)
+    elif how == 'patterned':
+      seq = generate_patterned_sequence(seq_len, alpha=True, lower=True)
+    elif how == 'top100':
+      _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, seq_len, tokenizer)
+    elif how == 'bottom100':
+      _, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, seq_len, tokenizer)
+    else:
+      raise ValueError("How Value not recognized - should be in ['random', 'patterned', 'top100', 'bottom100']")
     
     repeated_string_sequence = repeat_sequence(num_repeats, seq)
-    repeated_tokens = model.to_tokens(repeated_string_sequence)[0]
+    repeated_tokens = model.to_tokens(repeated_string_sequence, prepend_bos=True)[0]
     seq_length = int(len(repeated_tokens[1:])/num_repeats) # ignores start token 
+    if (seq_length < seq_len):
+      # in case generates one where the len is too short
+      # make sure len n reps is what should be 
+      i = i - 1
+      continue
     
     model_logits, model_cache = model.run_with_cache(repeated_tokens, remove_batch_dim=True)
     loss = model.loss_fn(model_logits, repeated_tokens.unsqueeze(0), per_token=True)[0].cpu()
@@ -205,7 +224,7 @@ def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_
       logits = model_logits[0, stream_index::seq_length, :].cpu()
       dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
       dataset_log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
-  
+      
       index_results = {
           "logits": logits,
           "losses": losses,
@@ -218,65 +237,88 @@ def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_
     sample_sequences.append(seq)
   return sample_vectors, sample_sequences
 
-def clustering_analysis(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, num_clusters=4):
+def clustering_analysis(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, num_clusters=4, n_components=10):
   sample_vectors, sample_sequences = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer)
-  KMeans_model = KMeans(n_clusters=num_clusters, random_state=0).fit(sample_vectors)
+  sample_vectors_p, sample_sequences_p = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='patterned')
+  sample_vectors_b, sample_sequences_b = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='bottom100')
+  sample_vectors_t, sample_sequences_t = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='top100')
+  
+  sample_vectors = sample_vectors + sample_vectors_p + sample_vectors_t + sample_vectors_b
+  sample_sequences = sample_sequences + sample_sequences_p + sample_sequences_t + sample_sequences_b
+  
+  np.save(f"outputs/repeat/cluster_analysis_1/sample_vectors.npy", sample_vectors)
+  np.save(f"outputs/repeat/cluster_analysis_1/sample_sequences.npy", sample_vectors)
+  
+  scaler = StandardScaler()
+  normalized_sample_vectors = scaler.fit_transform(sample_vectors)
+  pca = PCA(n_components=n_components)
+  pca_curvatures = pca.fit_transform(normalized_sample_vectors)
+  
+  KMeans_model = KMeans(n_clusters=num_clusters, random_state=0).fit(pca_curvatures)
   cluster_labels = KMeans_model.labels_
   cluster_groups = {}
+  
   for i in range(num_clusters):
-    cluster_groups[i] = sample_sequences[cluster_labels == i]
-  return cluster_groups, sample_sequences, cluster_labels
+    cluster_groups[i] = list(np.array(sample_sequences)[cluster_labels == i])
+  return cluster_groups, sample_vectors, sample_sequences, cluster_labels
 
 
 def main(FLAGS):
   print(sys.argv[0])
   torch.set_grad_enabled(False)
   torch.manual_seed(0)
+  np.random.seed(0)
   
   model = HookedTransformer.from_pretrained("gpt2-small", device=FLAGS.device)
   tokenizer = AutoTokenizer.from_pretrained("gpt2", device=FLAGS.device)
   
-  
-  for i in range(FLAGS.num_trials):
-    
-    if FLAGS.experiment == "run_randomized_repeat":
-      _, seq = generate_random_token_sequence(FLAGS.seq_length, tokenizer)
-      print("Randomly Generated Sequence: ", seq)
-    
-    elif FLAGS.experiment == "run_patterned_repeat":
-      seq = generate_patterned_sequence(FLAGS.seq_length, alpha=True, lower=True)
-      print("Patterned Generated Sequence: ", seq)
-    
-    elif FLAGS.experiment == "run_top100_repeat":
-      _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, FLAGS.seq_length, tokenizer)
-      print("Top 100 Generated Sequence: ", seq)
-      
-    elif FLAGS.experiment == "run_bottom100_repeat":
-      _, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, FLAGS.seq_length, tokenizer)
-      print("Bottom 100 Generated Sequence: ", seq) 
-      
-    else:
-      raise ValueError("Experiment not recognized")
-    
-    results = repeated_sequence_analysis(seq, FLAGS.num_repetitions, model)
-    os.makedirs(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}", exist_ok=True)
-    
-    with open(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/sequence.txt", 'w') as file:
-      file.write(seq)
-    plot_rr_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, layer=8, show=False, save_fig=True, 
-                          save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/rr_vs_repetitions_trial.png") 
-    plot_curvature_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
-                                  save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/curvature_vs_repetitions.png")
-    plot_loss_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
-                            save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/loss_vs_repetitions.png")
-  
   if FLAGS.experiment == "run_clustering_analysis":
-    cluster_groups, sample_sequences, cluster_labels = clustering_analysis(FLAGS.num_trials, FLAGS.seq_length, FLAGS.seq_length - 1, 
+    cluster_groups, sample_vectors, sample_sequences, cluster_labels = clustering_analysis(FLAGS.num_trials, FLAGS.seq_length, FLAGS.seq_length - 1, 
                         FLAGS.num_repetitions, model, tokenizer, num_clusters=FLAGS.num_clusters)
     os.makedirs(f"outputs/repeat/{FLAGS.name}/", exist_ok=True)
-    json.save(f"outputs/repeat/{FLAGS.name}/cluster_groups.json", cluster_groups)
-    plot_clusters(sample_sequences, cluster_labels, show=False, save_fig=True, 
-                  save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis.png")
+    json.dump(cluster_groups, open(f"outputs/repeat/{FLAGS.name}/cluster_groups.json", "w"))
+    np.save(f"outputs/repeat/{FLAGS.name}/sample_vectors.npy", sample_vectors)
+    np.save(f"outputs/repeat/{FLAGS.name}/sample_sequences.npy", sample_vectors)
+    plot_clusters(sample_vectors, sample_sequences, cluster_labels, show=False, save_fig=True, 
+                  save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis.html")
+    plot_clusters(sample_vectors, sample_sequences, cluster_labels, hover=True, show=False, save_fig=True, 
+                  save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis_hover.html")
+  else:
+    for i in range(FLAGS.num_trials):
+      
+      if FLAGS.experiment == "run_randomized_repeat":
+        _, seq = generate_random_token_sequence(FLAGS.seq_length, tokenizer)
+        print("Randomly Generated Sequence: ", seq)
+      
+      elif FLAGS.experiment == "run_patterned_repeat":
+        seq = generate_patterned_sequence(FLAGS.seq_length, alpha=True, lower=True)
+        print("Patterned Generated Sequence: ", seq)
+      
+      elif FLAGS.experiment == "run_top100_repeat":
+        _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, FLAGS.seq_length, tokenizer)
+        print("Top 100 Generated Sequence: ", seq)
+        
+      elif FLAGS.experiment == "run_bottom100_repeat":
+        _, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, FLAGS.seq_length, tokenizer)
+        print("Bottom 100 Generated Sequence: ", seq) 
+        
+      else:
+        raise ValueError("Experiment not recognized")
+      
+      results = repeated_sequence_analysis(seq, FLAGS.num_repetitions, model)
+        
+      os.makedirs(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}", exist_ok=True)
+      
+      with open(f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/sequence.txt", 'w') as file:
+        file.write(seq)
+      plot_rr_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, layer=8, show=False, save_fig=True, 
+                            save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/rr_vs_repetitions_trial.png") 
+      plot_curvature_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
+                                    save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/curvature_vs_repetitions.png")
+      plot_loss_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
+                              save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/loss_vs_repetitions.png")
+      plot_curvature_loss_vs_repetitions(results, FLAGS.seq_length - 1, offset=FLAGS.seq_length*2, show=False, save_fig=True, 
+                              save_path=f"outputs/repeat/{FLAGS.name}/seq_len={FLAGS.seq_length}-trial={i}/curvature_loss_vs_repetitions.png")
        
        
 if __name__ == '__main__':
@@ -287,7 +329,7 @@ if __name__ == '__main__':
   parser.add_argument('--seq-length', default=5, type=int, help='number of tokens per in-context example')
   parser.add_argument('--num-trials', default=10, type=int, help='number of trials to run with this seq length')
   parser.add_argument('--num-repetitions', default=100, type=int, help='maximum number of repeated in context examples')
-  parser.add_argument('--name', default='repeat', type=str, help='name of experiment')
+  parser.add_argument('--name', default='random_sequences', type=str, help='name of experiment')
   parser.add_argument('--experiment', default='run_randomized_repeat', type=str, 
                       help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis)')
   parser.add_argument('--num-clusters', default=4, type=int, help='number of clusters to use in clustering analysis')
@@ -295,4 +337,3 @@ if __name__ == '__main__':
   
   FLAGS = parser.parse_args()
   main(FLAGS)
-  

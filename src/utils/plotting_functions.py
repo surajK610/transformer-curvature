@@ -1,5 +1,8 @@
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+import plotly.express as px
+import plotly.io as pio
+import pandas as pd
 
 def plot_curvature_vs_repetitions(results, sequence_position, offset=0, 
                                   show=True, save_fig=False, save_path=None):
@@ -72,6 +75,38 @@ def plot_loss_vs_repetitions(results, sequence_position, offset=0,
     plt.show()
   plt.close()
     
+def plot_curvature_loss_vs_repetitions(results, sequence_position, offset=0,
+                                        show=True, save_fig=False, save_path=None):
+  x = list(range(len(results[sequence_position]["curvatures"])))
+  curvatures = results[sequence_position]["curvatures"] 
+  losses = results[sequence_position]["losses"]
+  
+  fig, ax1 = plt.subplots()
+  ax1.scatter(x[offset:], curvatures[offset:], label='curvature', color='b')
+  ax1.set_xlabel('Repetitions')
+  ax1.set_ylabel('curvature', color='b')
+  ax1.tick_params(axis='y', labelcolor='b')
+
+  ax2 = ax1.twinx()
+
+  ax2.scatter(x[offset:], losses[offset:], label='loss', color='r')
+  ax2.set_ylabel('loss', color='r')
+  ax2.tick_params(axis='y', labelcolor='r')
+
+  lines1, labels1 = ax1.get_legend_handles_labels()
+  lines2, labels2 = ax2.get_legend_handles_labels()
+  lines = lines1 + lines2
+  labels = labels1 + labels2
+  ax1.legend(lines, labels, loc='upper right')
+
+  plt.title("Curvature and Loss vs Repetitions")
+  if save_fig and save_path:
+    plt.savefig(save_path)
+  if show:
+    plt.show()
+  plt.close()
+    
+  
 ##### USEFUL FXNS FOR FIRST PASS CAPITALS #####
 
 def plot_curvature_vs_icl_examples(dataset_curvatures, show=True, save_fig=False, save_path=None):
@@ -150,27 +185,52 @@ def plot_global_curvature_dissected(dataset_curvatures, dataset_mlp_curvatures, 
     plt.show()
   plt.close()
   
-def plot_clusters(dataset_curvatures, cluster_labels, show=True, save_fig=False, save_path=None):
+def plot_clusters(dataset_curvatures, sample_sequences, cluster_labels, plotly=True, hover=False, show=True, save_fig=False, save_path=None):
+  
   pca = PCA(n_components=3)
   pca_curvatures = pca.fit_transform(dataset_curvatures)  
+  df_pca = pd.DataFrame(pca_curvatures, columns=['PC1', 'PC2', 'PC3'])
+  df_pca['Cluster'] = cluster_labels 
+  
+  if plotly: 
+    if hover:
+      fig = px.scatter_3d(
+      df_pca, x='PC1', y='PC2', z='PC3',
+      title='Clustered Curvature Graph',
+      labels={'PC1': 'Principal Component 1', 'PC2': 'Principal Component 2', 'PC3': 'Principal Component 3'},
+      hover_name=sample_sequences, 
+      color='Cluster'
+      )
+    else:
+      fig = px.scatter_3d(
+        df_pca, x='PC1', y='PC2', z='PC3',
+        title='Clustered Curvature Graph',
+        labels={'PC1': 'Principal Component 1', 'PC2': 'Principal Component 2', 'PC3': 'Principal Component 3'},
+        text=sample_sequences, 
+        color='Cluster'
+        )
+    fig.update_traces(textfont=dict(size=8))  # Set the font size for point labels
 
-  fig = plt.figure()
-  ax = fig.add_subplot(111, projection='3d')
+    if save_fig and save_path:
+      pio.write_html(fig, save_path)
+  else:
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
 
-  for cluster_label in set(cluster_labels):
-    cluster_indices = (cluster_labels == cluster_label)
-    ax.scatter(cluster_labels[cluster_indices, 0], 
-               pca_curvatures[cluster_indices, 1], 
-               pca_curvatures[cluster_indices, 2], 
-               label=f'Cluster {cluster_label}')
-    
-  ax.set_xlabel('PC1')
-  ax.set_ylabel('PC2')
-  ax.set_zlabel('PC3')
-  ax.set_title("Clustered Curvature Graph")
-  ax.legend()
-  if save_fig and save_path:
-    plt.savefig(save_path)
-  if show:
-    plt.show()
-  plt.close()
+    for cluster_label in set(cluster_labels):
+      cluster_indices = (cluster_labels == cluster_label)
+      ax.scatter(pca_curvatures[cluster_indices, 0], 
+                pca_curvatures[cluster_indices, 1], 
+                pca_curvatures[cluster_indices, 2], 
+                label=f'Cluster {cluster_label}')
+      
+    ax.set_xlabel('PC1')
+    ax.set_ylabel('PC2')
+    ax.set_zlabel('PC3')
+    ax.set_title("Clustered Curvature Graph")
+    ax.legend()
+    if save_fig and save_path:
+      plt.savefig(save_path)
+    if show:
+      plt.show()
+    plt.close()
