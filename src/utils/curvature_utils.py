@@ -29,7 +29,15 @@ def compute_global_curvature(cache, total_layers, stream_idx, sequence_length, i
   '''Computes the global curvature of the residual stream of a model with repeating sequences.'''
   curvatures = []
   for str_idx in range(stream_idx, len(cache["resid_pre", 0]), sequence_length):
-    displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
+    if include_mlps and include_attn:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
+    elif include_mlps:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_mid", 0][str_idx])))
+    elif include_attn:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_mid", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
+    else:
+      raise ValueError("Must include either MLPs or attention in the curvature calculation.")
+    
     distance = 0.0
     for layer in range(total_layers):
       if include_mlps:
@@ -56,7 +64,6 @@ def early_decode(model, cache, layer, mid=False):
   '''Decodes the residual stream of a model at a given layer, returning the decoded tokens.'''
   return model.unembed(cache[f'blocks.{layer}.hook_resid_{"mid" if mid else "post"}'].unsqueeze(0))
 
-
 def compute_prob_kls(prob_dists):
   '''Computes the kl distribution between the probability distributions of the ith and i+1th token predictions'''
   kls = []
@@ -70,6 +77,31 @@ def compute_long_range_kls(prob_dists, gap=40):
   for i in range(len(prob_dists) - gap):
     kls.append(torch.nn.functional.kl_div(prob_dists[i+gap], prob_dists[i], log_target=True).cpu().numpy())
   return kls
+
+def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True):
+  '''Computes the layer wise curvature of the residual stream of a model with repeating sequences.'''
+  curvatures = []
+  for str_idx in enumerate(range(stream_idx, len(cache["resid_pre", 0]), sequence_length)):
+    if include_mlps and include_attn:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
+    elif include_mlps:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_mid", 0][str_idx])))
+    elif include_attn:
+      displacement = torch.sqrt(torch.sum(torch.square(cache["resid_mid", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
+    else:
+      raise ValueError("Must include either MLPs or attention in the curvature calculation.")
+    
+    dict_distance = {}
+    for layer in range(total_layers):
+      distance = 0.0
+      if include_mlps:
+        distance+=torch.linalg.norm(cache['mlp_out', layer][str_idx])
+      if include_attn:
+        distance+=torch.linalg.norm(cache['attn_out', layer][str_idx])
+      dict_distance[layer] = (distance/displacement).cpu().numpy().item()
+    curvatures.append(dict_distance)
+  return curvatures
+
 
 def logit_attribution():
   pass
