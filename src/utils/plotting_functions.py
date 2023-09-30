@@ -106,6 +106,59 @@ def plot_curvature_loss_vs_repetitions(results, sequence_position, offset=0,
     plt.show()
   plt.close()
     
+def plot_layer_curvature_loss_vs_repetitions(results, sequence_position, layer, offset=0,
+                                        show=True, save_fig=False, save_path=None):
+  x = list(range(len(results[sequence_position]["curvatures"])))
+  curvatures = results[sequence_position]["curvatures"] 
+  losses = results[sequence_position]["losses"]
+  
+  fig, ax1 = plt.subplots()
+  ax1.scatter(x[offset:], [curv[layer] for curv in curvatures[offset:]], label=f'curvature_layer_{layer}', color='b')
+  ax1.set_xlabel('Repetitions')
+  ax1.set_ylabel(f'layer {layer} curvature', color='b')
+  ax1.tick_params(axis='y', labelcolor='b')
+
+  ax2 = ax1.twinx()
+
+  ax2.scatter(x[offset:], losses[offset:], label='loss', color='r')
+  ax2.set_ylabel('loss', color='r')
+  ax2.tick_params(axis='y', labelcolor='r')
+    
+  lines1, labels1 = ax1.get_legend_handles_labels()
+  lines2, labels2 = ax2.get_legend_handles_labels()
+    
+  lines =  lines1 + lines2
+  labels =  labels1 + labels2
+  ax1.legend(lines, labels, loc='upper right')
+
+  plt.title("Curvature and Loss vs Repetitions")
+  if save_fig and save_path:
+    plt.savefig(save_path)
+  if show:
+    plt.show()
+  plt.close()
+
+def plot_curvature_layers(results, sequence_position, repetition, show=True, save_fig=False, save_path=None):
+  NUM_LAYERS = 12
+  curvatures = results[sequence_position]["curvatures"] 
+  losses = results[sequence_position]["losses"]
+  
+  fig, ax1 = plt.subplots()
+  x = list(range(NUM_LAYERS))
+  ax1.scatter(x, [curvatures[repetition][layer_val] for layer_val in x], label=f'layerwise_curvature_reptition={repetition}', color='b')
+  ax1.set_xlabel('Layer')
+  ax1.set_ylabel(f'layer curvature for repetition {repetition}', color='b')
+  ax1.tick_params(axis='y', labelcolor='b')
+
+  lines, labels = ax1.get_legend_handles_labels()
+    
+  plt.title(f"Layer Curvature for Repetition {repetition}")
+  if save_fig and save_path:
+    plt.savefig(save_path)
+  if show:
+    plt.show()
+  plt.close()
+  
   
 ##### USEFUL FXNS FOR FIRST PASS CAPITALS #####
 

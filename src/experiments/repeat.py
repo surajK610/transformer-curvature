@@ -15,7 +15,10 @@ import json
 import matplotlib.pyplot as plt
 #sys.path.append('../src')
 from ..utils.curvature_utils import compute_global_curvature, early_decode, logit_attribution
-from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters
+from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
+                                       plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
+                                       plot_layer_curvature_loss_vs_repetitions, plot_curvature_layers
+                                       
 import argparse
 import random
 import os

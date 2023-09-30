@@ -20,6 +20,7 @@ circuitsvis
 plotly
 jaxtyping
 einops
+streamlit
 transformer_lens==1.6.1
 fancy_einsum==0.0.3
 urllib3==1.26.6 

@@ -78,10 +78,10 @@ def compute_long_range_kls(prob_dists, gap=40):
     kls.append(torch.nn.functional.kl_div(prob_dists[i+gap], prob_dists[i], log_target=True).cpu().numpy())
   return kls
 
-def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True):
-  '''Computes the layer wise curvature of the residual stream of a model with repeating sequences.'''
+
+def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True, cumulative=False):
   curvatures = []
-  for str_idx in enumerate(range(stream_idx, len(cache["resid_pre", 0]), sequence_length)):
+  for str_idx in range(stream_idx, len(cache["resid_pre", 0]), sequence_length):
     if include_mlps and include_attn:
       displacement = torch.sqrt(torch.sum(torch.square(cache["resid_post", total_layers - 1][str_idx] - cache["resid_pre", 0][str_idx])))
     elif include_mlps:
@@ -92,15 +92,21 @@ def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, inclu
       raise ValueError("Must include either MLPs or attention in the curvature calculation.")
     
     dict_distance = {}
+    if cumulative:
+        distance = 0.0
     for layer in range(total_layers):
-      distance = 0.0
+      if not cumulative:
+          distance = 0.0
+    
       if include_mlps:
         distance+=torch.linalg.norm(cache['mlp_out', layer][str_idx])
       if include_attn:
         distance+=torch.linalg.norm(cache['attn_out', layer][str_idx])
-      dict_distance[layer] = (distance/displacement).cpu().numpy().item()
+      dict_distance[layer] = (distance/displacement).clone().detach().item()
+    dict_distance['total'] = sum(dict_distance.values())
     curvatures.append(dict_distance)
   return curvatures
+
 
 
 def logit_attribution():

@@ -5,6 +5,6 @@ source venv/bin/activate
 ipnip=$(hostname -i)
 ipnport=8889
 echo "Paste the following command onto your local computer:"
-echo "ssh -N -L ${ipnport}:${ipnip}:${ipnport} sanand14@sshcampus.ccv.brown.edu"
+echo "ssh -N -L ${ipnport}:${ipnip}:${ipnport} ${USER}@sshcampus.ccv.brown.edu"
 output = $(jupyter-notebook --no-browser --port=$ipnport --ip=$ipnip)
 
