@@ -1,4 +1,5 @@
 # interact -n 20 -t 01:00:00 -m 10g -p 3090-gcondo
+export CURVATURE_HOME=/users/sanand14/data/sanand14/transformer-curvature
 streamlist_host=$(hostname -i)
 streamlist_port=8501
 echo "ssh -N -L ${streamlist_port}:${streamlist_host}:${streamlist_port} ${USER}@sshcampus.ccv.brown.edu"

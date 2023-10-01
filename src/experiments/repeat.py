@@ -9,12 +9,13 @@ from transformer_lens.hook_points import (
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 from transformers import AutoTokenizer
 
+import pandas as pd
 import numpy as np
 import torch
 import json
 import matplotlib.pyplot as plt
 #sys.path.append('../src')
-from ..utils.curvature_utils import compute_global_curvature, early_decode, logit_attribution
+from ..utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, logit_attribution
 from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
                                        plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
                                        plot_layer_curvature_loss_vs_repetitions, plot_curvature_layers
@@ -27,7 +28,6 @@ from tqdm import tqdm
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
-
 
 # -----------------------------------------------------------DATA-----------------------------------------------------------#
 
@@ -84,7 +84,7 @@ def generate_sequence_from_sample(sample_tokens, seq_length, tokenizer):
   random_sequence = tokenizer.convert_tokens_to_string(random_tokens)
   return random_tokens, random_sequence
 
-def generate_patterned_sequence(seq_length, alpha=True, lower=True):
+def generate_patterned_sequence(seq_length, alpha=True, lower=True, all_types=False):
   '''Generates a patterned sequence of tokens of length seq_length,
   either from lowercase letters, uppercase letters, or digits.
   Params:
@@ -94,12 +94,18 @@ def generate_patterned_sequence(seq_length, alpha=True, lower=True):
       lower: bool, whether to use lowercase or uppercase letters
   Returns:
       pattern: str, string of tokens sampled uniformly at random'''
-  if alpha and lower:
-    pattern_poss = string.ascii_lowercase
-  elif alpha and not lower:
-    pattern_poss = string.ascii_uppercase
+  if all_types:
+    if seq_length > len(string.digits):
+      return ValueError("Sequence length must be less than or equal to 10 to use digits")
+    pattern_poss = random.choice([string.ascii_lowercase, string.ascii_uppercase, string.digits], 
+                                 weights=[len(string.ascii_lowercase), len(string.ascii_uppercase), len(string.digits)])
   else:
-    pattern_poss = string.digits
+    if alpha and lower:
+      pattern_poss = string.ascii_lowercase
+    elif alpha and not lower:
+      pattern_poss = string.ascii_uppercase
+    else:
+      pattern_poss = string.digits
   start = random.choice(range(len(pattern_poss) - seq_length))
   pattern = pattern_poss[start:start+seq_length]
   return ' ' + ' '.join(list(pattern))
@@ -162,7 +168,6 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=F
     dataset_log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
     # answer_residual_directions = model.tokens_to_residual_directions(answer_tokens)
 
-
     for layer in range(model.cfg.n_layers):
       decodes = early_decode(model, model_cache, layer)
       softmax_logits = torch.nn.functional.log_softmax(decodes[0, stream_index::seq_length, :].cpu(), dim=-1)
@@ -191,11 +196,14 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=F
 
   return results
 
-
-def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='random'):
+def repeated_sequence_sample_generation(num_samples, seq_len, 
+                                        seq_position, num_repeats, 
+                                        model, tokenizer, 
+                                        how='random', compute_global=True):
   
   sample_vectors = []
   sample_sequences = []
+  sample_losses = []
   
   for i in tqdm(range(num_samples)):
     if how == 'random':
@@ -225,7 +233,10 @@ def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_
     for stream_index in range(seq_length):
       losses = loss[stream_index::seq_length]
       logits = model_logits[0, stream_index::seq_length, :].cpu()
-      dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+      if compute_global:
+        dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+      else:
+        dataset_curvatures = layer_wise_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
       dataset_log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
       
       index_results = {
@@ -238,13 +249,19 @@ def repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_
     y = results[seq_position]["curvatures"]
     sample_vectors.append(y)
     sample_sequences.append(seq)
-  return sample_vectors, sample_sequences
+    sample_losses.append(results[seq_position]["losses"])
+  return sample_vectors, sample_sequences, sample_losses
 
 def clustering_analysis(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, num_clusters=4, n_components=10):
-  sample_vectors, sample_sequences = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer)
-  sample_vectors_p, sample_sequences_p = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='patterned')
-  sample_vectors_b, sample_sequences_b = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='bottom100')
-  sample_vectors_t, sample_sequences_t = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='top100')
+  sample_vectors, sample_sequences, _ = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer)
+  sample_vectors_p, sample_sequences_p, _ = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='patterned')
+  sample_vectors_b, sample_sequences_b, _ = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='bottom100')
+  sample_vectors_t, sample_sequences_t, _ = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, how='top100')
+  
+  print(np.array(sample_vectors).shape)
+  print(np.array(sample_vectors_p).shape)
+  print(np.array(sample_vectors_t).shape)
+  print(np.array(sample_vectors_b).shape)
   
   sample_vectors = sample_vectors + sample_vectors_p + sample_vectors_t + sample_vectors_b
   sample_sequences = sample_sequences + sample_sequences_p + sample_sequences_t + sample_sequences_b
@@ -274,8 +291,60 @@ def main(FLAGS):
   
   model = HookedTransformer.from_pretrained("gpt2-small", device=FLAGS.device)
   tokenizer = AutoTokenizer.from_pretrained("gpt2", device=FLAGS.device)
+  num_layers = model.cfg.n_layers
   
-  if FLAGS.experiment == "run_clustering_analysis":
+  if FLAGS.experiment == "generate_streamlit_data":  
+    sample_vectors, sample_sequences, sample_losses = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                          FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                          model, tokenizer, how='random', 
+                                                                                          compute_global=False)
+
+    sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                                model, tokenizer, how='patterned', 
+                                                                                                compute_global=False)
+    
+    sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                                model, tokenizer, how='top100', 
+                                                                                                compute_global=False)
+    
+    sample_vectors_b, sample_sequences_b, sample_losses_b = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                                model, tokenizer, how='bottom100', 
+                                                                                                compute_global=False)
+    
+    
+    keys_layers = list(range(num_layers)) + ['total'] 
+    ## total is the sum of the layers curvature (equivalent to the global curvature)
+    
+    layers_random = { str(layer):[[curv[layer] for curv in curvatures] for curvatures in sample_vectors]
+                                        for layer in keys_layers}
+    layers_random['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses]
+    
+    layers_pattern= {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_p]
+                                           for layer in keys_layers}
+    layers_pattern['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_p]
+    
+    layers_top100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_t]
+                                           for layer in keys_layers}
+    layers_top100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_t]
+    
+    layers_bottom100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_b]
+                                           for layer in keys_layers}
+    layers_bottom100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_b]
+    
+    os.makedirs(f"outputs/repeat/streamlit/", exist_ok=True)
+    pd.Series(sample_sequences).to_csv(f"outputs/repeat/streamlit/sequences_random.csv", header=False)
+    pd.Series(sample_sequences_p).to_csv(f"outputs/repeat/streamlit/sequences_pattern.csv", header=False)
+    pd.Series(sample_sequences_t).to_csv(f"outputs/repeat/streamlit/sequences_top100.csv", header=False)
+    pd.Series(sample_sequences_b).to_csv(f"outputs/repeat/streamlit/sequences_bottom100.csv", header=False)
+    json.dump(layers_random, open(f"outputs/repeat/streamlit/layers_loss_random.json", "w"))
+    json.dump(layers_pattern, open(f"outputs/repeat/streamlit/layers_loss_pattern.json", "w"))
+    json.dump(layers_top100, open(f"outputs/repeat/streamlit/layers_loss_top100.json", "w"))
+    json.dump(layers_bottom100, open(f"outputs/repeat/streamlit/layers_loss_bottom100.json", "w"))
+
+  elif FLAGS.experiment == "run_clustering_analysis":
     cluster_groups, sample_vectors, sample_sequences, cluster_labels = clustering_analysis(FLAGS.num_trials, FLAGS.seq_length, FLAGS.seq_length - 1, 
                         FLAGS.num_repetitions, model, tokenizer, num_clusters=FLAGS.num_clusters)
     os.makedirs(f"outputs/repeat/{FLAGS.name}/", exist_ok=True)
@@ -334,7 +403,7 @@ if __name__ == '__main__':
   parser.add_argument('--num-repetitions', default=100, type=int, help='maximum number of repeated in context examples')
   parser.add_argument('--name', default='random_sequences', type=str, help='name of experiment')
   parser.add_argument('--experiment', default='run_randomized_repeat', type=str, 
-                      help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis)')
+                      help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis, generate_streamlit_data)')
   parser.add_argument('--num-clusters', default=4, type=int, help='number of clusters to use in clustering analysis')
   parser.add_argument("--device", default="cuda:0", type=str, help="device to run experiment on")
   

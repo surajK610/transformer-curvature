@@ -105,6 +105,7 @@ def plot_curvature_loss_vs_repetitions(results, sequence_position, offset=0,
   if show:
     plt.show()
   plt.close()
+  return fig
     
 def plot_layer_curvature_loss_vs_repetitions(results, sequence_position, layer, offset=0,
                                         show=True, save_fig=False, save_path=None):
@@ -137,7 +138,8 @@ def plot_layer_curvature_loss_vs_repetitions(results, sequence_position, layer, 
   if show:
     plt.show()
   plt.close()
-
+  return fig
+  
 def plot_curvature_layers(results, sequence_position, repetition, show=True, save_fig=False, save_path=None):
   NUM_LAYERS = 12
   curvatures = results[sequence_position]["curvatures"] 
@@ -158,6 +160,7 @@ def plot_curvature_layers(results, sequence_position, repetition, show=True, sav
   if show:
     plt.show()
   plt.close()
+  return fig
   
   
 ##### USEFUL FXNS FOR FIRST PASS CAPITALS #####
