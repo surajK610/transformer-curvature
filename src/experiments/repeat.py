@@ -15,7 +15,8 @@ import torch
 import json
 import matplotlib.pyplot as plt
 #sys.path.append('../src')
-from ..utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, logit_attribution
+from ..utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, \
+                                    logits_to_ave_logit_diff, residual_stack_to_logit_diff
 from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
                                        plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
                                        plot_layer_curvature_loss_vs_repetitions, plot_curvature_layers
@@ -250,6 +251,52 @@ def repeated_sequence_sample_generation(num_samples, seq_len,
     sample_sequences.append(seq)
     sample_losses.append(results[seq_position]["losses"])
   return sample_vectors, sample_sequences, sample_losses
+
+
+def logit_lens_analysis(num_samples, model, cumulative=False):
+  prompts = [
+    # " a b c d",
+    #" a b c d a b c d",
+     " a b c d a b c d a b c d",
+    # " a b c d a b c d a b c d a b c d",
+    # " e f g h e f g h e f g h e f g h",
+    # " w x y z w x y z w x y z w x y z",
+    
+  ]
+  answers = [
+      (" a", " b"),
+      # (" e", " f"), 
+      # (" w", " x")
+  ]
+  answer_tokens = torch.tensor([[model.to_single_token(corr), model.to_single_token(incorr)] for corr, incorr in answers]).cuda()
+
+  tokens = model.to_tokens(prompts, prepend_bos=True)
+  tokens = tokens.cuda()
+
+  original_logits, cache = model.run_with_cache(tokens)
+
+  print("Per prompt logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens, per_prompt=True))
+  print("Average logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens).item())
+
+  if cumulative:
+    answer_residual_directions = model.tokens_to_residual_directions(answer_tokens)
+    logit_diff_directions = answer_residual_directions[:, 0] - answer_residual_directions[:, 1]
+
+    accumulated_residual, labels = cache.accumulated_resid(layer=-1, incl_mid=True, pos_slice=-1, return_labels=True)
+    logit_lens_logit_diffs = residual_stack_to_logit_diff(accumulated_residual, cache, logit_diff_directions, prompts)
+    plt.plot(np.arange(model.cfg.n_layers*2+1)/2, utils.to_numpy(logit_lens_logit_diffs))
+    plt.xticks(np.arange(model.cfg.n_layers*2+1)/2, labels, rotation=90)
+    plt.title("Logit Difference From Accumulate Residual Stream")
+    plt.show()
+  else:
+    per_layer_residual, labels = cache.decompose_resid(layer=-1, pos_slice=-1, return_labels=True)
+    per_layer_logit_diffs = residual_stack_to_logit_diff(per_layer_residual, cache, logit_diff_directions, prompts)
+    plt.plot(np.arange(model.cfg.n_layers*2+2)/2, utils.to_numpy(per_layer_logit_diffs))
+    plt.title("Logit Difference From Each Layer")
+    plt.xticks(np.arange(model.cfg.n_layers*2+2)/2, labels, rotation=90)
+    plt.show()
+
+
 
 def clustering_analysis(num_samples, seq_len, seq_position, num_repeats, model, tokenizer, num_clusters=4, n_components=10):
   sample_vectors, sample_sequences, _ = repeated_sequence_sample_generation(num_samples, seq_len, seq_position, num_repeats, model, tokenizer)

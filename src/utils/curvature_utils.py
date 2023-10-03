@@ -7,7 +7,7 @@ from transformer_lens.hook_points import (
 
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 import torch
-
+import einsum
 import plotly.express as px
 
 def imshow(tensor, renderer=None, xaxis="", yaxis="", **kwargs):
@@ -107,7 +107,19 @@ def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, inclu
     curvatures.append(dict_distance)
   return curvatures
 
+def logits_to_ave_logit_diff(logits, answer_tokens, per_prompt=False, cumulative=False):
+  # Only the final logits are relevant for the answer
+  final_logits = logits[:, -1, :]
+  answer_logits = final_logits.gather(dim=-1, index=answer_tokens)
+  answer_logit_diff = answer_logits[:, 0] - answer_logits[:, 1]
+  if per_prompt:
+      return answer_logit_diff
+  else:
+      return answer_logit_diff.mean()
 
+def residual_stack_to_logit_diff(residual_stack, cache, logit_diff_directions, prompts) -> float:
+  scaled_residual_stack = cache.apply_ln_to_stack(residual_stack, layer = -1, pos_slice=-1)
+  return einsum("... batch d_model, batch d_model -> ...", scaled_residual_stack, logit_diff_directions)/len(prompts)
 
 def logit_attribution():
   pass
