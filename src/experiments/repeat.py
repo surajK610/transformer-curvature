@@ -206,25 +206,24 @@ def repeated_sequence_sample_generation(num_samples, seq_len,
   sample_losses = []
   
   for i in tqdm(range(num_samples)):
-    if how == 'random':
-      _, seq = generate_random_token_sequence(seq_len, tokenizer)
-    elif how == 'patterned':
-      seq = generate_patterned_sequence(seq_len, alpha=True, lower=True)
-    elif how == 'top100':
-      _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, seq_len, tokenizer)
-    elif how == 'bottom100':
-      _, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, seq_len, tokenizer)
-    else:
-      raise ValueError("How Value not recognized - should be in ['random', 'patterned', 'top100', 'bottom100']")
-    
-    repeated_string_sequence = repeat_sequence(num_repeats, seq)
-    repeated_tokens = model.to_tokens(repeated_string_sequence, prepend_bos=True)[0]
+    total_len = -1
+    while total_len != (seq_len * num_repeats + 1):
+      if how == 'random':
+        _, seq = generate_random_token_sequence(seq_len, tokenizer)
+      elif how == 'patterned':
+        seq = generate_patterned_sequence(seq_len, alpha=True, lower=True)
+      elif how == 'top100':
+        _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, seq_len, tokenizer)
+      elif how == 'bottom100':
+        _, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, seq_len, tokenizer)
+      else:
+        raise ValueError("How Value not recognized - should be in ['random', 'patterned', 'top100', 'bottom100']")
+      
+      repeated_string_sequence = repeat_sequence(num_repeats, seq)
+      repeated_tokens = model.to_tokens(repeated_string_sequence, prepend_bos=True)[0]
+      total_len = len(repeated_tokens)
+  
     seq_length = int(len(repeated_tokens[1:])/num_repeats) # ignores start token 
-    if (seq_length < seq_len):
-      # in case generates one where the len is too short
-      # make sure len n reps is what should be 
-      i = i - 1
-      continue
     
     model_logits, model_cache = model.run_with_cache(repeated_tokens, remove_batch_dim=True)
     loss = model.loss_fn(model_logits, repeated_tokens.unsqueeze(0), per_token=True)[0].cpu()
@@ -299,15 +298,15 @@ def main(FLAGS):
                                                                                           model, tokenizer, how='random', 
                                                                                           compute_global=False)
 
-    sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
-                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
-                                                                                                model, tokenizer, how='patterned', 
-                                                                                                compute_global=False)
+    # sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+    #                                                                                             FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+    #                                                                                             model, tokenizer, how='patterned', 
+    #                                                                                             compute_global=False)
     
-    sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
-                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
-                                                                                                model, tokenizer, how='top100', 
-                                                                                                compute_global=False)
+    # sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+    #                                                                                             FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+    #                                                                                             model, tokenizer, how='top100', 
+    #                                                                                             compute_global=False)
     
     sample_vectors_b, sample_sequences_b, sample_losses_b = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                                 FLAGS.seq_length - 1, FLAGS.num_repetitions, 
@@ -322,13 +321,13 @@ def main(FLAGS):
                                         for layer in keys_layers}
     layers_random['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses]
     
-    layers_pattern= {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_p]
-                                           for layer in keys_layers}
-    layers_pattern['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_p]
+    # layers_pattern= {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_p]
+    #                                        for layer in keys_layers}
+    # layers_pattern['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_p]
     
-    layers_top100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_t]
-                                           for layer in keys_layers}
-    layers_top100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_t]
+    # layers_top100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_t]
+    #                                        for layer in keys_layers}
+    # layers_top100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_t]
     
     layers_bottom100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_b]
                                            for layer in keys_layers}
@@ -336,12 +335,12 @@ def main(FLAGS):
     
     os.makedirs(f"outputs/repeat/streamlit/", exist_ok=True)
     pd.Series(sample_sequences).to_csv(f"outputs/repeat/streamlit/sequences_random.csv", header=False)
-    pd.Series(sample_sequences_p).to_csv(f"outputs/repeat/streamlit/sequences_pattern.csv", header=False)
-    pd.Series(sample_sequences_t).to_csv(f"outputs/repeat/streamlit/sequences_top100.csv", header=False)
+    # pd.Series(sample_sequences_p).to_csv(f"outputs/repeat/streamlit/sequences_pattern.csv", header=False)
+    # pd.Series(sample_sequences_t).to_csv(f"outputs/repeat/streamlit/sequences_top100.csv", header=False)
     pd.Series(sample_sequences_b).to_csv(f"outputs/repeat/streamlit/sequences_bottom100.csv", header=False)
     json.dump(layers_random, open(f"outputs/repeat/streamlit/layers_loss_random.json", "w"))
-    json.dump(layers_pattern, open(f"outputs/repeat/streamlit/layers_loss_pattern.json", "w"))
-    json.dump(layers_top100, open(f"outputs/repeat/streamlit/layers_loss_top100.json", "w"))
+    # json.dump(layers_pattern, open(f"outputs/repeat/streamlit/layers_loss_pattern.json", "w"))
+    # json.dump(layers_top100, open(f"outputs/repeat/streamlit/layers_loss_top100.json", "w"))
     json.dump(layers_bottom100, open(f"outputs/repeat/streamlit/layers_loss_bottom100.json", "w"))
 
   elif FLAGS.experiment == "run_clustering_analysis":

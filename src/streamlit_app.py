@@ -97,7 +97,20 @@ def clustering(offset=(0, 100)):
   sample_sequences_r = pd.read_csv('outputs/repeat/streamlit/sequences_random.csv', names=['seq'])['seq'].tolist()
   sample_sequences_p = pd.read_csv('outputs/repeat/streamlit/sequences_pattern.csv', names=['seq'])['seq'].tolist()
   sample_sequences_t = pd.read_csv('outputs/repeat/streamlit/sequences_top100.csv', names=['seq'])['seq'].tolist()
-  sample_sequences_b = pd.read_csv('outputs/repeat/streamlit/sequences_bottom100.csv', names=['seq'])['seq'].tolist()
+  # sample_sequences_b = pd.read_csv('outputs/repeat/streamlit/sequences_bottom100.csv', names=['seq'])['seq'].tolist()
+  sample_sequences_b = []
+
+  # Open the data file and read it line by line
+  with open('outputs/repeat/streamlit/sequences_bottom100.csv', 'r') as file:
+      for line in file:
+          try:
+            # Attempt to parse the line and add it to the list of valid rows
+            row_data = line.strip().split(',')[-1]  # Modify this line as needed for your data format
+            sample_sequences_b.append(row_data)
+          except ValueError:
+            pass
+              # Handle the error (e.g., skip the row, log the error, etc.)
+              # sample_sequences_b.append('UNK')
   
   sample_vectors = np.concatenate((sample_vectors_r, sample_vectors_p, sample_vectors_t, sample_vectors_b))
   sample_sequences = sample_sequences_r + sample_sequences_p + sample_sequences_t + sample_sequences_b
@@ -125,7 +138,7 @@ def clustering(offset=(0, 100)):
       color='Cluster'
       )
   st.plotly_chart(fig, use_container_width=True)
-  
+
 @st.cache_data
 def compute_mean_layers(file):
   layer_dict = json.load(open(file, "r"))

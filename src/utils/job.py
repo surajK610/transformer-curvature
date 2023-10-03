@@ -9,7 +9,6 @@ import itertools
 import json
 import os
 
-
 def _filter_options(python_script, options):
     # NOTE: This function is manually set! This removes some complexity
     # from the config files.
@@ -140,7 +139,6 @@ def _template_option(
     options,
 ):
     """Generates the template for an a call to train."""
-
     def _okay(k, v):
         if isinstance(v, bool) and not v:
             # safety: Forces new options to be added here
