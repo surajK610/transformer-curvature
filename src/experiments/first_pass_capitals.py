@@ -3,8 +3,8 @@ from transformer_lens import HookedTransformer
 
 import torch
 import matplotlib.pyplot as plt
-from ..utils.curvature_utils import compute_global_curvature_nonrepeating
-from ..utils.plotting_functions import plot_curvature_vs_icl_examples, plot_global_curvature_dissected
+from .utils.curvature_utils import compute_global_curvature_nonrepeating
+from .utils.plotting_functions import plot_curvature_vs_icl_examples, plot_global_curvature_dissected
 import argparse
 import random
 import os

@@ -3,7 +3,22 @@ from sklearn.decomposition import PCA
 import plotly.express as px
 import plotly.io as pio
 import pandas as pd
+import numpy as np
+from .curvature_utils import residual_stack_to_logit_diff
+import transformer_lens.utils as tutils
 
+
+def imshow(tensor, renderer=None, xaxis="", yaxis="", **kwargs):
+    px.imshow(tutils.to_numpy(tensor), color_continuous_midpoint=0.0, color_continuous_scale="RdBu", labels={"x":xaxis, "y":yaxis}, **kwargs).show(renderer)
+
+def line(tensor, renderer=None, xaxis="", yaxis="", **kwargs):
+    px.line(tutils.to_numpy(tensor), labels={"x":xaxis, "y":yaxis}, **kwargs).show(renderer)
+
+def scatter(x, y, xaxis="", yaxis="", caxis="", renderer=None, **kwargs):
+    x = tutils.to_numpy(x)
+    y = tutils.to_numpy(y)
+    px.scatter(y=y, x=x, labels={"x":xaxis, "y":yaxis, "color":caxis}, **kwargs).show(renderer)
+    
 def plot_curvature_vs_repetitions(results, sequence_position, offset=0, 
                                   show=True, save_fig=False, save_path=None):
   x = list(range(len(results[sequence_position]["curvatures"])))
@@ -163,6 +178,29 @@ def plot_curvature_layers(results, sequence_position, repetition, show=True, sav
   return fig
   
   
+def plot_logit_lens(cache, prompts, answer_tokens, model, cumulative=False, show=True, save_fig=False, save_path=None):
+  answer_residual_directions = model.tokens_to_residual_directions(answer_tokens)
+  logit_diff_directions = answer_residual_directions[:, 0] - answer_residual_directions[:, 1]
+
+  if cumulative:
+    accumulated_residual, labels = cache.accumulated_resid(layer=-1, incl_mid=True, pos_slice=-1, return_labels=True)
+    logit_lens_logit_diffs = residual_stack_to_logit_diff(accumulated_residual, cache, logit_diff_directions, prompts)
+    plt.plot(np.arange(model.cfg.n_layers*2+1)/2, tutils.to_numpy(logit_lens_logit_diffs))
+    plt.xticks(np.arange(model.cfg.n_layers*2+1)/2, labels, rotation=90)
+    plt.title("Logit Difference From Accumulate Residual Stream")
+  else:
+    per_layer_residual, labels = cache.decompose_resid(layer=-1, pos_slice=-1, return_labels=True)
+    per_layer_logit_diffs = residual_stack_to_logit_diff(per_layer_residual, cache, logit_diff_directions, prompts)
+    plt.plot(np.arange(model.cfg.n_layers*2+2)/2, tutils.to_numpy(per_layer_logit_diffs))
+    plt.title("Logit Difference From Each Layer")
+    plt.xticks(np.arange(model.cfg.n_layers*2+2)/2, labels, rotation=90)
+  if save_fig and save_path:
+    print('saving figure')
+    plt.savefig(save_path)
+  if show:
+    plt.show()
+  plt.close()
+
 ##### USEFUL FXNS FOR FIRST PASS CAPITALS #####
 
 def plot_curvature_vs_icl_examples(dataset_curvatures, show=True, save_fig=False, save_path=None):

@@ -7,7 +7,7 @@ from transformer_lens.hook_points import (
 
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 import torch
-import einsum
+from fancy_einsum import einsum
 import plotly.express as px
 
 def imshow(tensor, renderer=None, xaxis="", yaxis="", **kwargs):
@@ -106,6 +106,25 @@ def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, inclu
     dict_distance['total'] = sum(dict_distance.values())
     curvatures.append(dict_distance)
   return curvatures
+
+def layer_wise_norm_running_average(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True, cumulative=False):
+  norm_running_avgs = []
+  for str_idx in range(stream_idx, len(cache["resid_pre", 0]), sequence_length):
+    
+    rol_avg_dict_norm = {}
+    count = 0
+    for layer in range(total_layers):
+      distance = 0.0
+      
+      if include_mlps:
+        distance+=torch.linalg.norm(cache['mlp_out', layer][str_idx])
+      if include_attn:
+        distance+=torch.linalg.norm(cache['attn_out', layer][str_idx])
+      count += 1
+    
+      rol_avg_dict_norm[layer] = (rol_avg_dict_norm[layer]*(count - 1) +(distance).clone().detach().item())/count
+    norm_running_avgs.append(rol_avg_dict_norm)
+  return norm_running_avgs
 
 def logits_to_ave_logit_diff(logits, answer_tokens, per_prompt=False, cumulative=False):
   # Only the final logits are relevant for the answer

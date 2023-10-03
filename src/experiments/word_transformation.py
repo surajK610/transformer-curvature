@@ -11,8 +11,8 @@ from transformers import AutoTokenizer
 
 import torch
 import matplotlib.pyplot as plt
-from ..utils.curvature_utils import compute_global_curvature, early_decode
-from ..utils.plotting_functions import plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions
+from .utils.curvature_utils import compute_global_curvature, early_decode
+from .utils.plotting_functions import plot_curvature_vs_repetitions, plot_rr_vs_repetitions, plot_loss_vs_repetitions
 import argparse
 import random
 import os

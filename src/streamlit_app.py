@@ -2,10 +2,17 @@ import streamlit as st
 import pandas as pd
 import json
 import numpy as np
-from utils.plotting_functions import plot_layer_curvature_loss_vs_repetitions
+from experiments.utils.plotting_functions import plot_layer_curvature_loss_vs_repetitions
+from experiments.utils.curvature_utils import residual_stack_to_logit_diff
+from experiments.repeat import logit_lens_analysis
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+
+from transformer_lens import HookedTransformer
+from transformers import AutoTokenizer
+import transformer_lens.utils as tutils
+
 import plotly.express as px
 import matplotlib.pyplot as plt
 import matplotlib
@@ -15,6 +22,8 @@ st.set_page_config(page_title="Streamlit App", page_icon="🧊", layout="wide")
 N_COMPONENTS = 10
 N_CLUSTERS = 4
 RANDOM_STATE = 0
+model = HookedTransformer.from_pretrained("gpt2-small", device="cpu")
+tokenizer = AutoTokenizer.from_pretrained("gpt2", device="cpu")
 
 def intro(offset=0):  
 
@@ -88,6 +97,36 @@ def plot_layer_curvature_loss_vs_repetitions(dict_mean_layers, offset=(0, 100)):
     plt.title(f"Layer {key}")
     st.pyplot(fig)
 
+def logit_lens(offset=(0, 100)):
+  st.write("## Logit Lens Analysis")
+  option = st.selectbox(
+    'How would you like sequences to be generated?',
+    ('pattern', 'random', 'top100', 'bottom100'))
+  how=option 
+   
+  seq_length=4
+  for i in range(5):
+    results = logit_lens_analysis(40, tokenizer, i, seq_length,
+                                  model, device="cpu", how=how)
+    answer_residual_directions = model.tokens_to_residual_directions(results['answer_tokens'])
+    logit_diff_directions = answer_residual_directions[:, 0] - answer_residual_directions[:, 1]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    accumulated_residual, labels = results['cache'].accumulated_resid(layer=-1, incl_mid=True, pos_slice=-1, return_labels=True)
+    logit_lens_logit_diffs = residual_stack_to_logit_diff(accumulated_residual, results['cache'], logit_diff_directions, results['prompts'])
+    ax1.plot(np.arange(model.cfg.n_layers*2+1)/2, tutils.to_numpy(logit_lens_logit_diffs))
+    ax1.set_xticks(np.arange(model.cfg.n_layers*2+1)/2)
+    ax1.set_xticklabels(labels, rotation=90)
+    ax1.set_title(f"Cumulative")
+    
+    per_layer_residual, labels = results['cache'].decompose_resid(layer=-1, pos_slice=-1, return_labels=True)
+    per_layer_logit_diffs = residual_stack_to_logit_diff(per_layer_residual, results['cache'], logit_diff_directions, results['prompts'])
+    ax2.plot(np.arange(model.cfg.n_layers*2+2)/2, tutils.to_numpy(per_layer_logit_diffs))
+    ax2.set_xticks(np.arange(model.cfg.n_layers*2+2)/2)
+    ax2.set_xticklabels(labels, rotation=90)
+    ax2.set_title(f"Layerwise")
+    fig.suptitle(f'Repetitions={i}')
+    st.pyplot(fig)
+    
 def clustering(offset=(0, 100)):
   sample_vectors_r = json.load(open('outputs/repeat/streamlit/layers_loss_random.json', "r"))['total']
   sample_vectors_p = json.load(open('outputs/repeat/streamlit/layers_loss_pattern.json', "r"))['total']
@@ -152,10 +191,12 @@ page_names_to_funcs = {
   "Patterned Sequences": patterned_sequences,
   "Top 100 Sequences": top100_sequences,
   "Bottom 100 Sequences": bottom100_sequences,
+  "Logit Lens Analysis": logit_lens,
   "Clustering": clustering,
 }
 
 demo_name = st.sidebar.selectbox("Select a visualization", list(page_names_to_funcs.keys()))
 offset = st.sidebar.slider("Range", 0, 100, (0, 100))
+
 
 page_names_to_funcs[demo_name](offset)

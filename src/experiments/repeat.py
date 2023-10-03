@@ -15,11 +15,11 @@ import torch
 import json
 import matplotlib.pyplot as plt
 #sys.path.append('../src')
-from ..utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, \
+from .utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, \
                                     logits_to_ave_logit_diff, residual_stack_to_logit_diff
-from ..utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
+from .utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
                                        plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
-                                       plot_layer_curvature_loss_vs_repetitions, plot_curvature_layers
+                                       plot_layer_curvature_loss_vs_repetitions, plot_logit_lens
                                        
 import argparse
 import random
@@ -70,7 +70,7 @@ def generate_random_token_sequence(seq_length, tokenizer):
   random_token_ids = random.choices(valid_token_ids, k=seq_length)
   random_tokens = tokenizer.convert_ids_to_tokens(random_token_ids)
   random_sequence = tokenizer.convert_tokens_to_string(random_tokens)
-  return random_tokens, random_sequence
+  return random_token_ids, random_sequence
 
 def generate_sequence_from_sample(sample_tokens, seq_length, tokenizer):
   '''Generates a sequence of tokens from a sample.
@@ -83,7 +83,7 @@ def generate_sequence_from_sample(sample_tokens, seq_length, tokenizer):
   random_token_ids = random.choices(sample_tokens, k=seq_length)
   random_tokens = tokenizer.convert_ids_to_tokens(random_token_ids)
   random_sequence = tokenizer.convert_tokens_to_string(random_tokens)
-  return random_tokens, random_sequence
+  return random_token_ids, random_sequence
 
 def generate_patterned_sequence(seq_length, alpha=True, lower=True, all_types=False):
   '''Generates a patterned sequence of tokens of length seq_length,
@@ -211,7 +211,7 @@ def repeated_sequence_sample_generation(num_samples, seq_len,
     while total_len != (seq_len * num_repeats + 1):
       if how == 'random':
         _, seq = generate_random_token_sequence(seq_len, tokenizer)
-      elif how == 'patterned':
+      elif how == 'pattern':
         seq = generate_patterned_sequence(seq_len, alpha=True, lower=True)
       elif how == 'top100':
         _, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, seq_len, tokenizer)
@@ -253,48 +253,39 @@ def repeated_sequence_sample_generation(num_samples, seq_len,
   return sample_vectors, sample_sequences, sample_losses
 
 
-def logit_lens_analysis(num_samples, model, cumulative=False):
-  prompts = [
-    # " a b c d",
-    #" a b c d a b c d",
-     " a b c d a b c d a b c d",
-    # " a b c d a b c d a b c d a b c d",
-    # " e f g h e f g h e f g h e f g h",
-    # " w x y z w x y z w x y z w x y z",
+def logit_lens_analysis(num_samples, tokenizer, num_repeats, seq_length, model, device, how='pattern'):
+  prompts, answers = [], []
+  for _ in range(num_samples):
+    if how=='pattern':
+      seq = generate_patterned_sequence(seq_length, alpha=True, lower=True)
+    elif how=='random':
+      tokens, seq = generate_random_token_sequence(seq_length, tokenizer)
+    elif how=='top100':
+      tokens, seq = generate_sequence_from_sample(MOST_COMMON_TOKENS, seq_length, tokenizer)
+    elif how=='bottom100':
+      tokens, seq = generate_sequence_from_sample(LEAST_COMMON_TOKENS, seq_length, tokenizer)
+    results = repeat_sequence(num_repeats, seq)
+    prompts.append(results)
+    if how=='pattern':
+      answers.append((seq[0:2], seq[2:4]))
+    else:
+      answers.append((tokenizer.decode(tokens[0]), tokenizer.decode(tokens[1])))
     
-  ]
-  answers = [
-      (" a", " b"),
-      # (" e", " f"), 
-      # (" w", " x")
-  ]
-  answer_tokens = torch.tensor([[model.to_single_token(corr), model.to_single_token(incorr)] for corr, incorr in answers]).cuda()
+  print('prompts', prompts)
+  print('answers', answers)
+    
+  answer_tokens = torch.tensor([[model.to_single_token(corr), model.to_single_token(incorr)] for corr, incorr in answers]).to(device)
 
   tokens = model.to_tokens(prompts, prepend_bos=True)
-  tokens = tokens.cuda()
+  tokens = tokens.to(device)
 
   original_logits, cache = model.run_with_cache(tokens)
+  return {'prompts':prompts, 'answers':answers, 
+          'original_logits':original_logits, 'cache':cache, 
+          'answer_tokens':answer_tokens}
 
-  print("Per prompt logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens, per_prompt=True))
-  print("Average logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens).item())
-
-  if cumulative:
-    answer_residual_directions = model.tokens_to_residual_directions(answer_tokens)
-    logit_diff_directions = answer_residual_directions[:, 0] - answer_residual_directions[:, 1]
-
-    accumulated_residual, labels = cache.accumulated_resid(layer=-1, incl_mid=True, pos_slice=-1, return_labels=True)
-    logit_lens_logit_diffs = residual_stack_to_logit_diff(accumulated_residual, cache, logit_diff_directions, prompts)
-    plt.plot(np.arange(model.cfg.n_layers*2+1)/2, utils.to_numpy(logit_lens_logit_diffs))
-    plt.xticks(np.arange(model.cfg.n_layers*2+1)/2, labels, rotation=90)
-    plt.title("Logit Difference From Accumulate Residual Stream")
-    plt.show()
-  else:
-    per_layer_residual, labels = cache.decompose_resid(layer=-1, pos_slice=-1, return_labels=True)
-    per_layer_logit_diffs = residual_stack_to_logit_diff(per_layer_residual, cache, logit_diff_directions, prompts)
-    plt.plot(np.arange(model.cfg.n_layers*2+2)/2, utils.to_numpy(per_layer_logit_diffs))
-    plt.title("Logit Difference From Each Layer")
-    plt.xticks(np.arange(model.cfg.n_layers*2+2)/2, labels, rotation=90)
-    plt.show()
+  # print("Per prompt logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens, per_prompt=True))
+  # print("Average logit difference:", logits_to_ave_logit_diff(original_logits, answer_tokens).item())
 
 
 
@@ -345,15 +336,15 @@ def main(FLAGS):
                                                                                           model, tokenizer, how='random', 
                                                                                           compute_global=False)
 
-    # sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
-    #                                                                                             FLAGS.seq_length - 1, FLAGS.num_repetitions, 
-    #                                                                                             model, tokenizer, how='patterned', 
-    #                                                                                             compute_global=False)
+    sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                                model, tokenizer, how='pattern', 
+                                                                                                compute_global=False)
     
-    # sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
-    #                                                                                             FLAGS.seq_length - 1, FLAGS.num_repetitions, 
-    #                                                                                             model, tokenizer, how='top100', 
-    #                                                                                             compute_global=False)
+    sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
+                                                                                                FLAGS.seq_length - 1, FLAGS.num_repetitions, 
+                                                                                                model, tokenizer, how='top100', 
+                                                                                                compute_global=False)
     
     sample_vectors_b, sample_sequences_b, sample_losses_b = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                                 FLAGS.seq_length - 1, FLAGS.num_repetitions, 
@@ -368,13 +359,13 @@ def main(FLAGS):
                                         for layer in keys_layers}
     layers_random['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses]
     
-    # layers_pattern= {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_p]
-    #                                        for layer in keys_layers}
-    # layers_pattern['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_p]
+    layers_pattern= {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_p]
+                                           for layer in keys_layers}
+    layers_pattern['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_p]
     
-    # layers_top100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_t]
-    #                                        for layer in keys_layers}
-    # layers_top100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_t]
+    layers_top100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_t]
+                                           for layer in keys_layers}
+    layers_top100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_t]
     
     layers_bottom100 = {str(layer): [[curv[layer] for curv in curvatures] for curvatures in sample_vectors_b]
                                            for layer in keys_layers}
@@ -401,6 +392,17 @@ def main(FLAGS):
                   save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis.html")
     plot_clusters(sample_vectors, sample_sequences, cluster_labels, hover=True, show=False, save_fig=True, 
                   save_path=f"outputs/repeat/{FLAGS.name}/cluster_analysis_hover.html")
+  
+  elif FLAGS.experiment == "run_logit_lens_analysis":
+    how = FLAGS.logit_lens_how
+    os.makedirs(f"outputs/repeat/{FLAGS.name}/{how}/", exist_ok=True)
+    for i in range(FLAGS.num_repetitions):
+      results = logit_lens_analysis(FLAGS.num_trials, tokenizer, i, FLAGS.seq_length,
+                                    model, device=FLAGS.device, how=how)
+      plot_logit_lens(results['cache'], results['prompts'], 
+                      results['answer_tokens'], model, 
+                      cumulative=True, show=False, 
+                      save_fig=True, save_path=f"outputs/repeat/{FLAGS.name}/{how}/logit_lens-seq_len={FLAGS.seq_length}-num_reps={i}-cum.png")
   else:
     for i in range(FLAGS.num_trials):
       
@@ -448,8 +450,9 @@ if __name__ == '__main__':
   parser.add_argument('--num-trials', default=10, type=int, help='number of trials to run with this seq length')
   parser.add_argument('--num-repetitions', default=100, type=int, help='maximum number of repeated in context examples')
   parser.add_argument('--name', default='random_sequences', type=str, help='name of experiment')
+  parser.add_argument('--logit-lens-how', default='pattern', type=str, help='how to generate logit lens data (random, pattern, top100, bottom100)')
   parser.add_argument('--experiment', default='run_randomized_repeat', type=str, 
-                      help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis, generate_streamlit_data)')
+                      help='experiment to run (run_randomized_repeat, run_patterned_repeat, run_top100_repeat, run_bottom100_repeat, run_clustering_analysis, run_logit_lens_analysis, generate_streamlit_data)')
   parser.add_argument('--num-clusters', default=4, type=int, help='number of clusters to use in clustering analysis')
   parser.add_argument("--device", default="cuda:0", type=str, help="device to run experiment on")
   
