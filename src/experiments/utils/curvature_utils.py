@@ -4,7 +4,6 @@ from transformer_lens.hook_points import (
     HookedRootModule,
     HookPoint,
 )  # Hooking utilities
-
 from transformer_lens import HookedTransformer, HookedTransformerConfig, FactoredMatrix, ActivationCache
 import torch
 from fancy_einsum import einsum
@@ -107,24 +106,65 @@ def layer_wise_curvature(cache, total_layers, stream_idx, sequence_length, inclu
     curvatures.append(dict_distance)
   return curvatures
 
-def layer_wise_norm_running_average(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True, cumulative=False):
+def layer_wise_norm_running_average(cache, total_layers, stream_idx, sequence_length, include_mlps=True, include_attn=True):
   norm_running_avgs = []
+  rol_avg_dict_norm = {layer: 0 for layer in range(total_layers)}
+  count = 0
   for str_idx in range(stream_idx, len(cache["resid_pre", 0]), sequence_length):
-    
-    rol_avg_dict_norm = {}
-    count = 0
+    count += 1
     for layer in range(total_layers):
       distance = 0.0
-      
       if include_mlps:
         distance+=torch.linalg.norm(cache['mlp_out', layer][str_idx])
       if include_attn:
         distance+=torch.linalg.norm(cache['attn_out', layer][str_idx])
-      count += 1
+      rol_avg_dict_norm[layer] = (rol_avg_dict_norm[layer]*(count - 1) +(distance).clone().detach().item())/count 
+    norm_running_avgs.append(rol_avg_dict_norm.copy())
     
-      rol_avg_dict_norm[layer] = (rol_avg_dict_norm[layer]*(count - 1) +(distance).clone().detach().item())/count
-    norm_running_avgs.append(rol_avg_dict_norm)
   return norm_running_avgs
+
+def layer_wise_consec_kl_divs(model, cache, total_layers, stream_idx, sequence_length, resid_post=False, include_mlps=True, include_attn=True):
+  consec_kl_divs = []
+  
+  for str_idx in range(stream_idx, len(cache["resid_pre", 0]) - sequence_length, sequence_length):
+    ## for loop goes all the way to one from the end because we are comparing the ith and i+1th token predictions
+    kl_div_curr = {}
+    for layer in range(total_layers):
+      layer_distr, layer_distr_n = 0.0, 0.0
+      if not resid_post:
+        if include_mlps:
+          layer_distr += cache['mlp_out', layer][str_idx]
+          layer_distr_n += cache['mlp_out', layer][str_idx + sequence_length]
+        if include_attn:
+          layer_distr += cache['attn_out', layer][str_idx]
+          layer_distr_n += cache['mlp_out', layer][str_idx + sequence_length]
+      
+      if resid_post:
+        layer_distr += cache['resid_post', layer][str_idx]
+        layer_distr_n += cache['resid_post', layer][str_idx + sequence_length]
+      # print(layer_distr.unsqueeze([0, 1]).shape)
+      logits_distr = model.unembed(layer_distr.view(1, 1, -1))
+      logits_distr_n = model.unembed(layer_distr_n.view(1, 1, -1))
+      # umembed expects batch_size x sequence_length x embedding_dim
+      
+      log_probs = torch.nn.functional.log_softmax(logits_distr, dim=-1).view(-1)
+      log_probs_n = torch.nn.functional.log_softmax(logits_distr_n, dim=-1).view(-1)
+      # convert back to 1 dimensional vector
+      
+      kl_div_curr[layer] = torch.nn.functional.kl_div(log_probs, log_probs_n, log_target=True).detach().item()
+          
+    consec_kl_divs.append(kl_div_curr.copy())
+  
+  ## one extra just so it is the same length as the other lists
+  consec_kl_divs.append(kl_div_curr.copy())
+  return consec_kl_divs
+
+def compute_prob_kls(prob_dists):
+  '''Computes the kl distribution between the probability distributions of the ith and i+1th token predictions'''
+  kls = []
+  for i in range(len(prob_dists) - 1):
+    kls.append(torch.nn.functional.kl_div(prob_dists[i+1], prob_dists[i], log_target=True).cpu().numpy())
+  return kls
 
 def logits_to_ave_logit_diff(logits, answer_tokens, per_prompt=False, cumulative=False):
   # Only the final logits are relevant for the answer

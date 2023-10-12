@@ -16,7 +16,8 @@ import json
 import matplotlib.pyplot as plt
 #sys.path.append('../src')
 from .utils.curvature_utils import compute_global_curvature, early_decode, layer_wise_curvature, \
-                                    logits_to_ave_logit_diff, residual_stack_to_logit_diff
+                                    logits_to_ave_logit_diff, residual_stack_to_logit_diff, \
+                                    layer_wise_norm_running_average
 from .utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
                                        plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
                                        plot_layer_curvature_loss_vs_repetitions, plot_logit_lens
@@ -136,7 +137,10 @@ def repeat_sequence_w_space(num_examples, string_sequence):
   return ' '+s.strip()
 
 # --------------------------------------------------------------ANALYSIS FUNCTIONS-----------------------------------------------------#
-def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=False):
+
+from tqdm import tqdm
+
+def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=False, compute_global=True, norm=False):
   '''Analyzes the curvature of a repeated sequence.
   Params:
       string_sequence: str, the string sequence to repeat
@@ -165,7 +169,14 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=F
     # print((stream_index + 1)/seq_length)
     losses = loss[stream_index::seq_length]
     logits = model_logits[0, stream_index::seq_length, :].cpu()
-    dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+    if norm: 
+      dataset_curvatures = layer_wise_norm_running_average(model_cache, model.cfg.n_layers, stream_index, seq_length)
+    else:
+      if compute_global: 
+        dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+      else: 
+        dataset_curvatures = layer_wise_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+      
     dataset_log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
     # answer_residual_directions = model.tokens_to_residual_directions(answer_tokens)
 
@@ -200,7 +211,8 @@ def repeated_sequence_analysis(string_sequence, num_repeats, model, with_space=F
 def repeated_sequence_sample_generation(num_samples, seq_len, 
                                         seq_position, num_repeats, 
                                         model, tokenizer, 
-                                        how='random', compute_global=True):
+                                        how='random', compute_global=True,
+                                        norm=False):
   
   sample_vectors = []
   sample_sequences = []
@@ -233,10 +245,13 @@ def repeated_sequence_sample_generation(num_samples, seq_len,
     for stream_index in range(seq_length):
       losses = loss[stream_index::seq_length]
       logits = model_logits[0, stream_index::seq_length, :].cpu()
-      if compute_global:
-        dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+      if norm: 
+        dataset_curvatures = layer_wise_norm_running_average(model_cache, model.cfg.n_layers, stream_index, seq_length)
       else:
-        dataset_curvatures = layer_wise_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+        if compute_global:
+          dataset_curvatures = compute_global_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
+        else:
+          dataset_curvatures = layer_wise_curvature(model_cache, model.cfg.n_layers, stream_index, seq_length)
       dataset_log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
       
       index_results = {
@@ -331,28 +346,31 @@ def main(FLAGS):
   num_layers = model.cfg.n_layers
   
   if FLAGS.experiment == "generate_streamlit_data":  
+    norm = True
     sample_vectors, sample_sequences, sample_losses = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                           FLAGS.seq_length - 1, FLAGS.num_repetitions, 
                                                                                           model, tokenizer, how='random', 
-                                                                                          compute_global=False)
+                                                                                          compute_global=False, norm=norm)
 
     sample_vectors_p, sample_sequences_p, sample_losses_p = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                                 FLAGS.seq_length - 1, FLAGS.num_repetitions, 
                                                                                                 model, tokenizer, how='pattern', 
-                                                                                                compute_global=False)
+                                                                                                compute_global=False, norm=norm)
     
     sample_vectors_t, sample_sequences_t, sample_losses_t = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                                 FLAGS.seq_length - 1, FLAGS.num_repetitions, 
                                                                                                 model, tokenizer, how='top100', 
-                                                                                                compute_global=False)
+                                                                                                compute_global=False, norm=norm)
     
     sample_vectors_b, sample_sequences_b, sample_losses_b = repeated_sequence_sample_generation(FLAGS.num_trials, FLAGS.seq_length, 
                                                                                                 FLAGS.seq_length - 1, FLAGS.num_repetitions, 
                                                                                                 model, tokenizer, how='bottom100', 
-                                                                                                compute_global=False)
+                                                                                                compute_global=False, norm=norm)
     
     
-    keys_layers = list(range(num_layers)) + ['total'] 
+    keys_layers = list(range(num_layers))
+    if not norm:
+      keys_layers += ['total'] 
     ## total is the sum of the layers curvature (equivalent to the global curvature)
     
     layers_random = { str(layer):[[curv[layer] for curv in curvatures] for curvatures in sample_vectors]
@@ -372,14 +390,14 @@ def main(FLAGS):
     layers_bottom100['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses_b]
     
     os.makedirs(f"outputs/repeat/streamlit/", exist_ok=True)
-    pd.Series(sample_sequences).to_csv(f"outputs/repeat/streamlit/sequences_random.csv", header=False)
-    # pd.Series(sample_sequences_p).to_csv(f"outputs/repeat/streamlit/sequences_pattern.csv", header=False)
-    # pd.Series(sample_sequences_t).to_csv(f"outputs/repeat/streamlit/sequences_top100.csv", header=False)
-    pd.Series(sample_sequences_b).to_csv(f"outputs/repeat/streamlit/sequences_bottom100.csv", header=False)
-    json.dump(layers_random, open(f"outputs/repeat/streamlit/layers_loss_random.json", "w"))
-    # json.dump(layers_pattern, open(f"outputs/repeat/streamlit/layers_loss_pattern.json", "w"))
-    # json.dump(layers_top100, open(f"outputs/repeat/streamlit/layers_loss_top100.json", "w"))
-    json.dump(layers_bottom100, open(f"outputs/repeat/streamlit/layers_loss_bottom100.json", "w"))
+    pd.Series(sample_sequences).to_csv(f"outputs/repeat/streamlit/sequences_random_n.csv", header=False)
+    pd.Series(sample_sequences_p).to_csv(f"outputs/repeat/streamlit/sequences_pattern_n.csv", header=False)
+    pd.Series(sample_sequences_t).to_csv(f"outputs/repeat/streamlit/sequences_top100_n.csv", header=False)
+    pd.Series(sample_sequences_b).to_csv(f"outputs/repeat/streamlit/sequences_bottom100_n.csv", header=False)
+    json.dump(layers_random, open(f"outputs/repeat/streamlit/layers_loss_random_n.json", "w"))
+    json.dump(layers_pattern, open(f"outputs/repeat/streamlit/layers_loss_pattern_n.json", "w"))
+    json.dump(layers_top100, open(f"outputs/repeat/streamlit/layers_loss_top100_n.json", "w"))
+    json.dump(layers_bottom100, open(f"outputs/repeat/streamlit/layers_loss_bottom100_n.json", "w"))
 
   elif FLAGS.experiment == "run_clustering_analysis":
     cluster_groups, sample_vectors, sample_sequences, cluster_labels = clustering_analysis(FLAGS.num_trials, FLAGS.seq_length, FLAGS.seq_length - 1, 
