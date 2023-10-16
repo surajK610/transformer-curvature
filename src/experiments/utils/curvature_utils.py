@@ -123,6 +123,7 @@ def layer_wise_norm_running_average(cache, total_layers, stream_idx, sequence_le
     
   return norm_running_avgs
 
+
 def layer_wise_consec_kl_divs(model, cache, total_layers, stream_idx, sequence_length, resid_post=False, include_mlps=True, include_attn=True):
   consec_kl_divs = []
   
@@ -143,6 +144,7 @@ def layer_wise_consec_kl_divs(model, cache, total_layers, stream_idx, sequence_l
         layer_distr += cache['resid_post', layer][str_idx]
         layer_distr_n += cache['resid_post', layer][str_idx + sequence_length]
       # print(layer_distr.unsqueeze([0, 1]).shape)
+      scaled_residual_stack = cache.apply_ln_to_stack(residual_stack, layer = -1, pos_slice=-1)
       logits_distr = model.unembed(layer_distr.view(1, 1, -1))
       logits_distr_n = model.unembed(layer_distr_n.view(1, 1, -1))
       # umembed expects batch_size x sequence_length x embedding_dim
@@ -179,6 +181,41 @@ def logits_to_ave_logit_diff(logits, answer_tokens, per_prompt=False, cumulative
 def residual_stack_to_logit_diff(residual_stack, cache, logit_diff_directions, prompts) -> float:
   scaled_residual_stack = cache.apply_ln_to_stack(residual_stack, layer = -1, pos_slice=-1)
   return einsum("... batch d_model, batch d_model -> ...", scaled_residual_stack, logit_diff_directions)/len(prompts)
+
+def layer_wise_losses(model, cache, total_layers, example, stream_idx, sequence_length, resid_post=False):
+  losses_lw = []
+  layer_loss = {}
+  layer_val = {}
+  if not resid_post:
+    per_layer_residual, labels = cache.decompose_resid(layer=-1, return_labels=True)
+    dict_lrs = {label: layer_residual for label, layer_residual in zip(labels, per_layer_residual)}
+    for i in range(total_layers):
+      layer_val[i] = dict_lrs[f'{i}_attn_out'] + dict_lrs[f'{i}_mlp_out']
+  else:
+    per_layer_residual, labels = cache.accumulated_resid(layer=-1, incl_mid=True, return_labels=True)
+    dict_lrs = {label: layer_residual for label, layer_residual in zip(labels, per_layer_residual)}
+    for i in range(total_layers - 1):
+      layer_val[i] =  dict_lrs[f'{i+1}_pre'] ## after pre is before post
+    layer_val[total_layers - 1] = dict_lrs[f'final_post']
+                                           
+  layer_val_stack = torch.stack([layer_val[i] for i in range(total_layers)], dim=0)
+  layer_val_stack = layer_val_stack.squeeze(1)
+  scaled_residual_stack = cache.apply_ln_to_stack(layer_val_stack, layer = -1) ## apply last ln layer
+  
+  for layer in range(total_layers):
+    layer_distr = scaled_residual_stack[layer]
+    layer_logits = model.unembed(layer_distr.unsqueeze(0))
+    layer_loss[layer] = model.loss_fn(layer_logits, example.unsqueeze(0), per_token=True)[0].cpu()[stream_idx::sequence_length]
+  
+  for idx in range(len(layer_loss[0])):
+    ## put into form cuz other stuff written loke that
+    loss_curr = {}
+    for layer in range(total_layers):
+      loss_curr[layer] = layer_loss[layer][idx].item()
+          
+    losses_lw.append(loss_curr.copy())
+  
+  return losses_lw
 
 def logit_attribution():
   pass

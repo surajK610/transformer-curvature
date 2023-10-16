@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 #sys.path.append('../src')
 from .utils.curvature_utils import compute_global_curvature, compute_prob_kls, early_decode, layer_wise_consec_kl_divs, layer_wise_curvature, \
                                     logits_to_ave_logit_diff, residual_stack_to_logit_diff, \
-                                    layer_wise_norm_running_average
+                                    layer_wise_norm_running_average, layer_wise_losses
 from .utils.plotting_functions import plot_curvature_loss_vs_repetitions, plot_curvature_vs_repetitions, \
                                        plot_rr_vs_repetitions, plot_loss_vs_repetitions, plot_clusters, \
                                        plot_layer_curvature_loss_vs_repetitions, plot_logit_lens
@@ -51,37 +51,40 @@ def lookup_sequence_norm_analysis(model, dataset_size,
   
   sample_vectors = []
   sample_losses = []
-  sample_kl_divs = []
+  sample_layer_losses = []
   results = []
 
   for example in tqdm(examples):
     seq_length = int(len(example[1:])/num_repetitions)
-    value_idx = seq_length - 2 ## index of the colon 
+    value_idx = seq_length - 1 ## index of the COLON because starts with a start token
     
     example = torch.tensor(example).to(device)
     model_logits, model_cache = model.run_with_cache(example, remove_batch_dim=True)
     loss = model.loss_fn(model_logits, example.unsqueeze(0), per_token=True)[0].cpu()
     
+    # print(example[value_idx::seq_length])
     losses = loss[value_idx::seq_length]
     logits = model_logits[0, value_idx::seq_length, :].cpu()
     log_probs = torch.nn.functional.log_softmax(logits.cpu(), dim=-1)
     
     dataset_norms = layer_wise_norm_running_average(model_cache, model.cfg.n_layers, value_idx, seq_length)
-    dataset_kl_divergences = layer_wise_consec_kl_divs(model, model_cache, model.cfg.n_layers, value_idx, seq_length, 
-                                                       resid_post=resid_post)
+    dataset_losses = layer_wise_losses(model, model_cache, model.cfg.n_layers, example, value_idx, seq_length, 
+                                                        resid_post=resid_post)
+    # dataset_kl_divergences = layer_wise_consec_kl_divs(model, model_cache, model.cfg.n_layers, value_idx, seq_length, 
+    #                                                    resid_post=resid_post)
       
     index_results = {
           "logits": logits,
           "losses": losses,
           "log_probabilities": log_probs,
           "running_norms": dataset_norms,
-          "kl_divergences": dataset_kl_divergences,
+          "layer_losses": dataset_losses,
     }
     results.append(index_results)
     sample_vectors.append(index_results['running_norms'])
     sample_losses.append(index_results['losses'])
-    sample_kl_divs.append(index_results['kl_divergences'])
-  return results, sample_vectors, sample_losses, sample_kl_divs
+    sample_layer_losses.append(index_results['layer_losses'])
+  return results, sample_vectors, sample_losses, sample_layer_losses
 
 def logit_lens_analysis(model, dataset_size, 
                         rand_seq_length, num_repetitions,
@@ -120,7 +123,7 @@ def main(FLAGS):
   num_layers = model.cfg.n_layers
   
   if FLAGS.experiment == "generate_streamlit_data":  
-    results, sample_vectors, sample_losses, sample_kl_divs = lookup_sequence_norm_analysis(model, FLAGS.size, 
+    results, sample_vectors, sample_losses, sample_layer_losses = lookup_sequence_norm_analysis(model, FLAGS.size, 
                                                                                     FLAGS.rand_seq_length, FLAGS.num_repetitions, 
                                                                                     FLAGS.key_len, FLAGS.size_dict, FLAGS.token_sep, 
                                                                                     device=FLAGS.device, resid_post=True)
@@ -131,7 +134,7 @@ def main(FLAGS):
     for layer in keys_layers:
       layers[str(layer)] = {}
       layers[str(layer)]['running_norm'] = [[norm[layer] for norm in running_norms] for running_norms in sample_vectors]
-      layers[str(layer)]['consec_kls'] = [[kl[layer] for kl in consec_kl] for consec_kl in sample_kl_divs]
+      layers[str(layer)]['layer_losses'] = [[ll[layer] for ll in layer_loss] for layer_loss in sample_layer_losses]
     layers['loss'] = [sample_loss.cpu().tolist() for sample_loss in sample_losses]
     os.makedirs(f"outputs/lookup/streamlit/", exist_ok=True)
     json.dump(layers, open(f"outputs/lookup/streamlit/{FLAGS.name}.json", "w"))
